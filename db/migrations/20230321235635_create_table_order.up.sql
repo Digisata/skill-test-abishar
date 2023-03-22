@@ -3,5 +3,5 @@ CREATE TABLE sales (
     customer TEXT,
     quantity INTEGER,
     price NUMERIC(10, 2),
-    timestamp TIMESTAMP
+    timestamp TEXT
 );

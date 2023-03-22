@@ -2,14 +2,29 @@ package main
 
 import (
 	"database/sql"
+	"encoding/json"
 	"fmt"
 	"log"
 	"net/http"
 	"os"
+	"sync"
 
 	"github.com/joho/godotenv"
 	_ "github.com/lib/pq"
 )
+
+type Sale struct {
+	ID        int     `json:"id"`
+	Customer  string  `json:"customer"`
+	Quantity  int     `json:"quantity"`
+	Price     float64 `json:"price"`
+	Timestamp string  `json:"timestamp"`
+}
+
+type RequestBody struct {
+	RequestID int    `json:"request_id"`
+	Data      []Sale `json:"data"`
+}
 
 func main() {
 	err := godotenv.Load()
@@ -31,9 +46,57 @@ func main() {
 	}
 	defer db.Close()
 
-	http.HandleFunc("/orders", func(w http.ResponseWriter, r *http.Request) {
-		fmt.Fprint(w, "Hello World")
+	http.HandleFunc("/sales", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != "POST" {
+			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+
+		var requestBody RequestBody
+		err := json.NewDecoder(r.Body).Decode(&requestBody)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+
+		batchSum := 10
+		dataLength := len(requestBody.Data)
+		div := dataLength / batchSum
+		mod := dataLength % batchSum
+		wg := sync.WaitGroup{}
+
+		if dataLength != 0 {
+			for i := 0; i < batchSum; i++ {
+				salesData := requestBody.Data[div*i : div*(i+1)]
+				if i == batchSum-1 && mod != 0 {
+					salesData = requestBody.Data[div*i : div*(i+1)+mod]
+				}
+
+				if div == 0 {
+					salesData = requestBody.Data
+					i = batchSum - 1
+				}
+
+				wg.Add(1)
+				go insertIntoSales(salesData, db, &wg)
+			}
+		}
+
+		wg.Wait()
+		w.WriteHeader(http.StatusOK)
+		fmt.Fprintln(w, "Sales data received successfully")
 	})
 
 	http.ListenAndServe(fmt.Sprintf(":%s", port), nil)
+}
+
+func insertIntoSales(data []Sale, db *sql.DB, wg *sync.WaitGroup) {
+	defer wg.Done()
+	for _, sale := range data {
+		query := `INSERT INTO sales (id, customer, quantity, price, timestamp) VALUES ($1, $2, $3, $4, $5)`
+		_, err := db.Exec(query, sale.ID, sale.Customer, sale.Quantity, sale.Price, sale.Timestamp)
+		if err != nil {
+			log.Fatal(err)
+		}
+	}
 }
