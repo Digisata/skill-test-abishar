@@ -59,11 +59,14 @@ func main() {
 			return
 		}
 
+		errChan := make(chan error, 1)
+
 		batchSum := 10
 		dataLength := len(requestBody.Data)
 		div := dataLength / batchSum
 		mod := dataLength % batchSum
 		wg := sync.WaitGroup{}
+		tx, _ := db.Begin()
 
 		if dataLength != 0 {
 			for i := 0; i < batchSum; i++ {
@@ -78,25 +81,33 @@ func main() {
 				}
 
 				wg.Add(1)
-				go insertIntoSales(salesData, db, &wg)
+				go insertIntoSales(salesData, tx, &wg, errChan)
 			}
 		}
 
 		wg.Wait()
-		w.WriteHeader(http.StatusOK)
-		fmt.Fprintln(w, "Sales data received successfully")
+		select {
+		case err := <-errChan:
+			w.WriteHeader(http.StatusBadRequest)
+			fmt.Fprintf(w, "Sales data fail: %s", err.Error())
+		default:
+			tx.Commit()
+			w.WriteHeader(http.StatusOK)
+			fmt.Fprintln(w, "Sales data received successfully")
+		}
 	})
 
 	http.ListenAndServe(fmt.Sprintf(":%s", port), nil)
 }
 
-func insertIntoSales(data []Sale, db *sql.DB, wg *sync.WaitGroup) {
+func insertIntoSales(data []Sale, tx *sql.Tx, wg *sync.WaitGroup, ch chan<- error) {
 	defer wg.Done()
 	for _, sale := range data {
 		query := `INSERT INTO sales (id, customer, quantity, price, timestamp) VALUES ($1, $2, $3, $4, $5)`
-		_, err := db.Exec(query, sale.ID, sale.Customer, sale.Quantity, sale.Price, sale.Timestamp)
+		_, err := tx.Exec(query, sale.ID, sale.Customer, sale.Quantity, sale.Price, sale.Timestamp)
 		if err != nil {
-			log.Fatal(err)
+			tx.Rollback()
+			ch <- err
 		}
 	}
 }
